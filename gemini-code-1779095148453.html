@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Local Dream WebUI</title>
+    <style>
+        body { font-family: sans-serif; background: #1a1a1a; color: #eee; max-width: 900px; margin: 0 auto; padding: 20px; }
+        .config-panel { background: #2a2a2a; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #aaa; }
+        input, textarea { width: 100%; padding: 8px; background: #333; border: 1px solid #444; color: white; border-radius: 4px; box-sizing: border-box; }
+        button { background: #5c67f2; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        #output-container { text-align: center; margin-top: 20px; min-height: 300px; border: 2px dashed #444; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+        #preview { max-width: 100%; border-radius: 4px; display: none; }
+        .progress-bar { width: 100%; height: 4px; background: #444; margin-top: 10px; }
+        #progress-inner { width: 0%; height: 100%; background: #5c67f2; transition: width 0.3s; }
+    </style>
+</head>
+<body>
+
+    <h2>🎨 Local Dream 控制台</h2>
+
+    <div class="config-panel">
+        <div class="input-group">
+            <label>API 地址</label>
+            <input type="text" id="serverUrl" value="http://localhost:8081">
+        </div>
+        <div class="input-group">
+            <label>正向提示词 (Prompt)</label>
+            <textarea id="prompt" rows="3">cat playing with ball</textarea>
+        </div>
+        <div class="input-group">
+            <label>负向提示词 (Negative Prompt)</label>
+            <textarea id="negPrompt" rows="2">bad anatomy, bad hands, missing fingers, extra fingers...</textarea>
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <div class="input-group" style="flex: 1;">
+                <label>尺寸 (Size)</label>
+                <input type="number" id="size" value="512">
+            </div>
+            <div class="input-group" style="flex: 1;">
+                <label>步数 (Steps)</label>
+                <input type="number" id="steps" value="20">
+            </div>
+        </div>
+        <button id="genBtn">开始生成图像</button>
+    </div>
+
+    <div id="output-container">
+        <div id="statusText">等待指令...</div>
+        <div class="progress-bar"><div id="progress-inner"></div></div>
+        <img id="preview" alt="Generated Image">
+    </div>
+
+    <script>
+        const genBtn = document.getElementById('genBtn');
+        const statusText = document.getElementById('statusText');
+        const progressInner = document.getElementById('progress-inner');
+        const preview = document.getElementById('preview');
+
+        genBtn.addEventListener('click', async () => {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const payload = {
+                prompt: document.getElementById('prompt').value,
+                negative_prompt: document.getElementById('negPrompt').value,
+                size: parseInt(document.getElementById('size').value),
+                steps: parseInt(document.getElementById('steps').value),
+                // 默认其他参数
+                cfg: 8.0,
+                use_opencl: true
+            };
+
+            // 初始化UI
+            genBtn.disabled = true;
+            statusText.innerText = "正在连接服务器...";
+            progressInner.style.width = '0%';
+            preview.style.display = 'none';
+
+            try {
+                const response = await fetch(`${serverUrl}/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    
+                    // 留下最后一个可能不完整的行在 buffer 中
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (!line.startsWith("data: ")) continue;
+                        const dataStr = line.replace("data: ", "").trim();
+                        
+                        if (dataStr === "[DONE]") break;
+
+                        try {
+                            const msg = JSON.parse(dataStr);
+                            if (msg.type === "progress") {
+                                const percent = (msg.step / msg.total_steps) * 100;
+                                progressInner.style.width = percent + '%';
+                                statusText.innerText = `生成中: ${msg.step}/${msg.total_steps}`;
+                            } 
+                            else if (msg.type === "complete") {
+                                statusText.innerText = `生成完成! 耗时: ${msg.generation_time_ms}ms`;
+                                // 核心步骤：直接将 base64 字符串拼接到 src 即可展示
+                                preview.src = `data:image/png;base64,${msg.image}`;
+                                preview.style.display = 'block';
+                            }
+                        } catch (e) {
+                            console.error("解析流数据失败", e);
+                        }
+                    }
+                }
+            } catch (err) {
+                statusText.innerText = "错误: " + err.message;
+            } finally {
+                genBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
